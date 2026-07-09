@@ -1,0 +1,162 @@
+pipeline {
+    agent { label 'dev-agent' }
+
+    options {
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    environment {
+        GIT_APP_REPO      = 'https://github.com/zoop/zoop-customer-platform.git'
+        GIT_INFRA_REPO    = 'https://github.com/zoop/marine-ford.git'
+        DEPLOY_ENV        = 'develop'
+        DEPLOY_DIR        = 'dev'
+        INFRA_FOLDER_NAME = 'zoop-customer-platform'          // TODO: confirm folder name in marine-ford/k8s/
+
+        ENV               = 'develop'
+        GAR_REPO          = 'TODO_GAR_REPO'      // TODO: confirm with DevOps
+        GCR_HOSTNAME      = 'asia-south1-docker.pkg.dev'
+        GCR_PROJECT_ID    = 'zoop-one-development'
+        GKE_CLUSTER       = 'development-k8s-cluster'
+        GKE_NAMESPACE     = 'develop'
+        GKE_REGION        = 'asia-south1'
+        GKE_DEPLOYMENT_NAME = 'zoop-customer-platform-deploy' // TODO: confirm with DevOps
+        SERVICE_IMAGE_NAME  = 'zoop-customer-platform'
+        SONAR_HOST_URL    = 'https://sonarqube.zoop.tools/'
+
+        JOB_STATUS = 'PENDING'
+    }
+
+    parameters {
+        string(name: 'REF_NAME', defaultValue: 'develop', description: 'Branch/Tag to build')
+        booleanParam(name: 'NO_CACHE', defaultValue: false, description: 'Build without Docker cache')
+        booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'Run SonarQube + Trivy scans?')
+    }
+
+    stages {
+
+        stage('Clone & Setup') {
+            steps {
+                script {
+                    def APP_REPO_NAME   = sh(script: "basename -s .git ${GIT_APP_REPO}", returnStdout: true).trim()
+                    def INFRA_REPO_NAME = sh(script: "basename -s .git ${GIT_INFRA_REPO}", returnStdout: true).trim()
+
+                    env.APP_REPO_CLONE_PATH   = "${APP_REPO_NAME}-${params.REF_NAME}"
+                    env.INFRA_REPO_CLONE_PATH = "${INFRA_REPO_NAME}-${params.REF_NAME}"
+
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: params.REF_NAME]],
+                        extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: env.APP_REPO_CLONE_PATH]],
+                        userRemoteConfigs: [[credentialsId: 'git-ssh-creds', url: GIT_APP_REPO]]
+                    ])
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: 'main']],
+                        extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: env.INFRA_REPO_CLONE_PATH]],
+                        userRemoteConfigs: [[credentialsId: 'git-ssh-creds', url: GIT_INFRA_REPO]]
+                    ])
+
+                    def envFolderPath   = "${env.INFRA_REPO_CLONE_PATH}/github/zoop-customer-platform/${DEPLOY_ENV}"
+                    def secretsFilePath = "${envFolderPath}/.env.secrets"
+                    def varsFilePath    = "${envFolderPath}/.env.vars"
+                    def envFilePath     = "${env.APP_REPO_CLONE_PATH}/.env"
+
+                    if (fileExists(secretsFilePath) && fileExists(varsFilePath)) {
+                        sh """
+                            cat ${secretsFilePath} > ${envFilePath}
+                            echo "" >> ${envFilePath}
+                            cat ${varsFilePath} >> ${envFilePath}
+                        """
+                    } else {
+                        error("Missing .env.secrets or .env.vars in ${envFolderPath}")
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when { expression { params.RUN_TESTS } }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        sonar-scanner \
+                            -Dsonar.projectKey=zoop-customer-platform \
+                            -Dsonar.sources=. \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=${SONARQUBE_TOKEN}
+                    """
+                }
+            }
+        }
+
+        stage('Trivy Security Scan') {
+            when { expression { params.RUN_TESTS } }
+            parallel {
+                stage('Filesystem Scan') {
+                    steps {
+                        sh """
+                            trivy fs \
+                                --exit-code 0 \
+                                --severity HIGH,CRITICAL \
+                                --format table \
+                                ${env.APP_REPO_CLONE_PATH}
+                        """
+                    }
+                }
+                stage('IaC Scan') {
+                    steps {
+                        sh """
+                            trivy config \
+                                --exit-code 0 \
+                                --severity HIGH,CRITICAL \
+                                ${env.APP_REPO_CLONE_PATH}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                script {
+                    dir("${env.APP_REPO_CLONE_PATH}") {
+                        def SHORT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                        env.IMAGE_TAG = "${GCR_HOSTNAME}/${GCR_PROJECT_ID}/${GAR_REPO}/${SERVICE_IMAGE_NAME}:${SHORT_SHA}"
+                        sh """
+                            gcloud auth configure-docker ${GCR_HOSTNAME} --quiet
+                            docker build \
+                                ${params.NO_CACHE ? '--no-cache' : ''} \
+                                --target release \
+                                -t ${env.IMAGE_TAG} .
+                            docker push ${env.IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    sh """
+                        gcloud container clusters get-credentials ${GKE_CLUSTER} --region=${GKE_REGION} --project=${GCR_PROJECT_ID}
+                        sed -i "s|APP_IMAGE|${env.IMAGE_TAG}|" ${env.INFRA_REPO_CLONE_PATH}/k8s/${INFRA_FOLDER_NAME}/${DEPLOY_DIR}/deployment.yaml
+                        kubectl apply -f ${env.INFRA_REPO_CLONE_PATH}/k8s/${INFRA_FOLDER_NAME}/${DEPLOY_DIR} -n ${GKE_NAMESPACE}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success  { script { JOB_STATUS = 'SUCCESSFUL' } }
+        failure  { script { JOB_STATUS = 'FAILED' } }
+        unstable { script { JOB_STATUS = 'UNSTABLE' } }
+        always {
+            script {
+                cleanWs()
+                sh 'docker volume prune -f && docker container prune -f'
+            }
+        }
+    }
+}
