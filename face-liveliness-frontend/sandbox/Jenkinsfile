@@ -12,7 +12,6 @@ pipeline {
         DEPLOY_DIR        = 'sandbox'
         INFRA_FOLDER_NAME = 'face-liveliness-frontend'          // TODO: confirm folder name in marine-ford/k8s/
 
-        ENV               = 'sandbox'
         GAR_REPO          = 'TODO_GAR_REPO'      // TODO: confirm with DevOps
         GCR_HOSTNAME      = 'asia-south1-docker.pkg.dev'
         GCR_PROJECT_ID    = 'zoop-production'
@@ -27,6 +26,7 @@ pipeline {
     }
 
     parameters {
+        // FIXME: branch 'sandbox' does not exist in this repo yet — pipeline will fail at checkout until DevOps creates it (intentionally not defaulting to another branch, to avoid silently deploying trunk code via a sandbox/prod-labeled pipeline)
         string(name: 'REF_NAME', defaultValue: 'sandbox', description: 'Branch/Tag to build')
         booleanParam(name: 'NO_CACHE', defaultValue: false, description: 'Build without Docker cache')
         booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'Run SonarQube + Trivy scans?')

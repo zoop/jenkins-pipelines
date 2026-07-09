@@ -12,7 +12,6 @@ pipeline {
         DEPLOY_DIR        = 'dev'
         INFRA_FOLDER_NAME = 'digilocker'          // TODO: confirm folder name in marine-ford/k8s/
 
-        ENV               = 'develop'
         GAR_REPO          = 'TODO_GAR_REPO'      // TODO: confirm with DevOps
         GCR_HOSTNAME      = 'asia-south1-docker.pkg.dev'
         GCR_PROJECT_ID    = 'zoop-one-development'
@@ -27,7 +26,8 @@ pipeline {
     }
 
     parameters {
-        string(name: 'REF_NAME', defaultValue: 'develop', description: 'Branch/Tag to build')
+        // NOTE: repo has no 'develop' branch yet — defaulting to 'master' (its actual default branch) until one exists
+        string(name: 'REF_NAME', defaultValue: 'master', description: 'Branch/Tag to build')
         booleanParam(name: 'NO_CACHE', defaultValue: false, description: 'Build without Docker cache')
         booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'Run SonarQube + Trivy scans?')
     }

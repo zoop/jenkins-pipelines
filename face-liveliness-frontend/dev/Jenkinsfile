@@ -12,7 +12,6 @@ pipeline {
         DEPLOY_DIR        = 'dev'
         INFRA_FOLDER_NAME = 'face-liveliness-frontend'          // TODO: confirm folder name in marine-ford/k8s/
 
-        ENV               = 'develop'
         GAR_REPO          = 'TODO_GAR_REPO'      // TODO: confirm with DevOps
         GCR_HOSTNAME      = 'asia-south1-docker.pkg.dev'
         GCR_PROJECT_ID    = 'zoop-one-development'
